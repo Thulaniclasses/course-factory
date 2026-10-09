@@ -1,0 +1,265 @@
+import type { GeneratedCourse } from "@/lib/ai";
+
+// SCORM 1.2 manifest — the XML file every LMS reads to understand the package
+function buildManifest(course: GeneratedCourse): string {
+  const identifier = `course_${Date.now()}`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<manifest identifier="${identifier}" version="1.2"
+  xmlns="http://www.imsproject.org/xsd/imscp_rootv1p1p2"
+  xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_rootv1p2"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.imsproject.org/xsd/imscp_rootv1p1p2 imscp_rootv1p1p2.xsd
+                      http://www.imsglobal.org/xsd/imsmd_rootv1p2p1 imsmd_rootv1p2p1.xsd
+                      http://www.adlnet.org/xsd/adlcp_rootv1p2 adlcp_rootv1p2.xsd">
+  <metadata>
+    <schema>ADL SCORM</schema>
+    <schemaversion>1.2</schemaversion>
+  </metadata>
+  <organizations default="org_${identifier}">
+    <organization identifier="org_${identifier}">
+      <title>${escapeXml(course.title)}</title>
+      <item identifier="item_1" identifierref="resource_1">
+        <title>${escapeXml(course.title)}</title>
+      </item>
+    </organization>
+  </organizations>
+  <resources>
+    <resource identifier="resource_1" type="webcontent" adlcp:scormtype="sco" href="index.html">
+      <file href="index.html"/>
+      <file href="course-data.json"/>
+      <file href="scorm-api.js"/>
+      <file href="styles.css"/>
+    </resource>
+  </resources>
+</manifest>`;
+}
+
+function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+// SCORM 1.2 API discovery — finds the LMS-provided API object
+function buildScormApi(): string {
+  return `// SCORM 1.2 API discovery + tracking
+(function () {
+  var API = null;
+  var findAttempts = 0;
+
+  function findAPI(win) {
+    var attempts = 0;
+    while (win.API == null && win.parent != null && win.parent != win && attempts < 500) {
+      attempts++;
+      win = win.parent;
+    }
+    return win.API;
+  }
+
+  function getAPI() {
+    if (API) return API;
+    if (window.parent && window.parent != window) API = findAPI(window.parent);
+    if (!API && window.opener) API = findAPI(window.opener);
+    if (!API && window.top) API = findAPI(window.top);
+    return API;
+  }
+
+  window.SCORM = {
+    init: function () {
+      var api = getAPI();
+      if (!api) return false;
+      var r = api.LMSInitialize("");
+      return r === "true";
+    },
+    setStatus: function (status) {
+      var api = getAPI();
+      if (!api) return;
+      api.LMSSetValue("cmi.core.lesson_status", status);
+      api.LMSCommit("");
+    },
+    setScore: function (score) {
+      var api = getAPI();
+      if (!api) return;
+      api.LMSSetValue("cmi.core.score.raw", String(score));
+      api.LMSSetValue("cmi.core.score.min", "0");
+      api.LMSSetValue("cmi.core.score.max", "100");
+      api.LMSCommit("");
+    },
+    setLocation: function (loc) {
+      var api = getAPI();
+      if (!api) return;
+      api.LMSSetValue("cmi.core.lesson_location", loc);
+      api.LMSCommit("");
+    },
+    finish: function () {
+      var api = getAPI();
+      if (!api) return;
+      api.LMSCommit("");
+      api.LMSFinish("");
+    },
+  };
+})();`;
+}
+
+// The learner-facing player — reads course-data.json and renders the course
+function buildPlayer(): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Course Player</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">Loading course...</div>
+<script src="scorm-api.js"></script>
+<script>
+(async function () {
+  window.SCORM.init();
+
+  const course = await fetch("course-data.json").then(r => r.json());
+  const state = { moduleIdx: 0, cardIdx: 0, quizIdx: 0, score: 0, answered: {} };
+  const totalQuestions = course.modules.reduce((s, m) => s + m.quiz.length, 0);
+
+  function render() {
+    const m = course.modules[state.moduleIdx];
+    const app = document.getElementById("app");
+
+    if (state.cardIdx < m.content.length) {
+      // Content card view
+      app.innerHTML = \`
+        <div class="player">
+          <div class="progress">Module \${state.moduleIdx + 1} of \${course.modules.length} · Card \${state.cardIdx + 1} of \${m.content.length}</div>
+          <h1>\${m.title}</h1>
+          <div class="card">\${m.content[state.cardIdx]}</div>
+          <button onclick="next()">Continue →</button>
+        </div>
+      \`;
+    } else if (!state.answered["scenario_" + state.moduleIdx]) {
+      // Branching scenario
+      app.innerHTML = \`
+        <div class="player">
+          <div class="progress">Module \${state.moduleIdx + 1} · Scenario</div>
+          <h1>Scenario</h1>
+          <div class="card">\${m.scenario.prompt}</div>
+          \${m.scenario.options.map(o => \`<button class="option" onclick="answerScenario('\${o.id}', \${o.isCorrect}, \\\`\${o.feedback.replace(/\\\`/g, '\\\\\\\`')}\\\`)">\${o.text}</button>\`).join("")}
+          <div id="feedback"></div>
+        </div>
+      \`;
+    } else if (state.quizIdx < m.quiz.length) {
+      // Quiz view
+      const q = m.quiz[state.quizIdx];
+      app.innerHTML = \`
+        <div class="player">
+          <div class="progress">Module \${state.moduleIdx + 1} · Quiz \${state.quizIdx + 1} of \${m.quiz.length}</div>
+          <h1>Knowledge Check</h1>
+          <div class="card">\${q.question}</div>
+          \${q.options.map((opt, i) => \`<button class="option" onclick="answerQuiz(\${i}, \${q.correctIndex})">\${opt}</button>\`).join("")}
+        </div>
+      \`;
+    } else if (state.moduleIdx < course.modules.length - 1) {
+      // Module complete
+      app.innerHTML = \`
+        <div class="player">
+          <h1>Module Complete ✓</h1>
+          <p>You've finished Module \${state.moduleIdx + 1} of \${course.modules.length}.</p>
+          <button onclick="nextModule()">Continue to Next Module →</button>
+        </div>
+      \`;
+    } else {
+      // Final completion
+      const pct = Math.round((state.score / totalQuestions) * 100);
+      window.SCORM.setScore(pct);
+      window.SCORM.setStatus(pct >= 70 ? "passed" : "completed");
+      app.innerHTML = \`
+        <div class="player">
+          <h1>🎉 Course Complete</h1>
+          <p>You scored \${state.score} / \${totalQuestions} (\${pct}%)</p>
+          <p>\${pct >= 70 ? "Congratulations — you passed!" : "Review the material and try again."}</p>
+        </div>
+      \`;
+    }
+  }
+
+  window.next = function () {
+    state.cardIdx++;
+    if (state.cardIdx >= course.modules[state.moduleIdx].content.length) {
+      // Move to scenario
+    }
+    window.SCORM.setLocation(\`m\${state.moduleIdx}_c\${state.cardIdx}\`);
+    render();
+  };
+
+  window.answerScenario = function (id, isCorrect, feedback) {
+    state.answered["scenario_" + state.moduleIdx] = true;
+    document.querySelectorAll(".option").forEach(b => b.disabled = true);
+    document.getElementById("feedback").innerHTML = isCorrect
+      ? \`<div class="feedback correct">✓ \${feedback}</div><button onclick="next()">Continue →</button>\`
+      : \`<div class="feedback incorrect">✗ \${feedback}</div>\`;
+  };
+
+  window.answerQuiz = function (chosen, correct) {
+    if (chosen === correct) state.score++;
+    state.quizIdx++;
+    render();
+  };
+
+  window.nextModule = function () {
+    state.moduleIdx++;
+    state.cardIdx = 0;
+    state.quizIdx = 0;
+    render();
+  };
+
+  render();
+})();
+</script>
+</body>
+</html>`;
+}
+
+// Basic CSS for the player
+function buildStyles(): string {
+  return `* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0a0a0a; color: #e5e5e5; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 2rem; }
+.player { max-width: 720px; width: 100%; }
+.progress { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #737373; margin-bottom: 1.5rem; }
+h1 { font-size: 1.75rem; font-weight: 600; margin-bottom: 1.5rem; color: #fff; }
+.card { background: #171717; border: 1px solid #262626; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; line-height: 1.6; }
+button { background: #fff; color: #000; border: none; padding: 0.75rem 1.5rem; border-radius: 8px; font-size: 0.9rem; font-weight: 500; cursor: pointer; transition: background 0.15s; }
+button:hover { background: #d4d4d4; }
+.option { display: block; width: 100%; text-align: left; background: #171717; color: #e5e5e5; border: 1px solid #262626; padding: 1rem; margin-bottom: 0.5rem; border-radius: 8px; }
+.option:hover { background: #1f1f1f; border-color: #404040; }
+.option:disabled { opacity: 0.6; cursor: default; }
+.feedback { padding: 1rem; border-radius: 8px; margin-bottom: 1rem; }
+.feedback.correct { background: #052e16; border: 1px solid #166534; color: #86efac; }
+.feedback.incorrect { background: #450a0a; border: 1px solid #991b1b; color: #fca5a5; }`;
+}
+
+// Build the full SCORM package as a Blob (zip)
+export async function buildScormPackage(course: GeneratedCourse): Promise<Blob> {
+  // Dynamic import of JSZip so it only loads when needed
+  const JSZip = (await import("jszip")).default;
+  const zip = new JSZip();
+
+  zip.file("imsmanifest.xml", buildManifest(course));
+  zip.file("index.html", buildPlayer());
+  zip.file("scorm-api.js", buildScormApi());
+  zip.file("styles.css", buildStyles());
+  zip.file("course-data.json", JSON.stringify(course, null, 2));
+
+  return await zip.generateAsync({ type: "blob" });
+}
+
+export function downloadScormPackage(blob: Blob, courseTitle: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${courseTitle.replace(/\s+/g, "-").toLowerCase()}-scorm.zip`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
