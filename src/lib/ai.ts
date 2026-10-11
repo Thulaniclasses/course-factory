@@ -2,10 +2,13 @@ import OpenAI from "openai";
 import { validateCourse, buildRetryPrompt } from "./validator";
 import {
   type CourseSettings,
+  CARDS_PER_MODULE,
   DEFAULT_SETTINGS,
   resolveModuleCount,
   resolveQuizPerModule,
 } from "./courseSettings";
+import { getTemplate } from "./templates";
+import { DEFAULT_BRANDING } from "./branding";
 
 export interface CourseScenarioOption {
   id: string;
@@ -18,6 +21,8 @@ export interface CourseQuizQuestion {
   question: string;
   options: string[];
   correctIndex: number;
+  /** Why the correct option is the professional answer. */
+  rationale?: string;
 }
 
 export interface CourseModule {
@@ -52,21 +57,22 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 // ============================================================
 // SYSTEM PROMPT (identical for both providers)
 // ============================================================
-const SYSTEM_PROMPT = `You are a senior Instructional Designer and Subject Matter Expert (SME) in Anti-Money Laundering (AML), Counter-Financing of Terrorism (CFT), and Financial Intelligence Unit (FIU) operations.
+const SYSTEM_PROMPT = `You are a senior instructional designer writing a business-grade course for working professionals.
 
-Your task: transform raw source material into a structured, interactive eLearning course aligned with the Egmont Group / ECOFEL Certification Program (ECP) standards.
+Your task: turn the source material into a full course for the client named in CLIENT BRANDING. Research the governing standards, recognised practice, and operational consequences of the subject. Do not stop at a summary of the notes. Do not attribute the course to a different organisation.
 
 RULES:
-1. Create 3 to 5 modules. Each module should take 8-12 minutes to complete.
+1. Create 3 to 5 modules. Each module is a complete lesson of about 15–20 minutes, not an overview.
 2. Each module MUST start with EXACTLY 3 measurable learning objectives. Each objective must begin with "By the end of this module, learners will be able to..." followed by a Bloom's taxonomy verb (identify, apply, analyze, evaluate, draft, assess). Do NOT skip this field.
-3. Each module must have 3-5 content cards. Each card = 1 focused idea, 2-4 sentences max. No walls of text.
-4. Each module must have ONE branching scenario with exactly 2 options (one correct, one incorrect). Scenarios MUST be operationally realistic for FIU analysts — e.g., reviewing Suspicious Transaction Reports (STRs), coordinating with law enforcement, drafting National Risk Assessment (NRA) data requests, handling international FIU-to-FIU information exchange.
-5. Each module must have 2-3 quiz questions with 4 options each.
-6. Reference authoritative frameworks where relevant: FATF Recommendations (cite by number, e.g., "FATF Recommendation 1", "FATF Recommendation 20"), UN Conventions, Wolfsberg Principles, Egmont Group Principles for Information Exchange.
-7. Use terminology correctly: ML (Money Laundering), TF (Terrorist Financing), STR (Suspicious Transaction Report), SAR (Suspicious Activity Report), FIU (Financial Intelligence Unit), NRA (National Risk Assessment), RBA (Risk-Based Approach), PEP (Politically Exposed Person), CDD (Customer Due Diligence), EDD (Enhanced Due Diligence).
-8. Language must be professional, precise, and accessible to FIU analysts globally — including those in developing jurisdictions with limited resources.
-9. Avoid country-specific legal references (e.g., don't cite "US Bank Secrecy Act") — stick to international frameworks.
-10. Always respond with valid JSON only — no markdown, no explanations, no code fences.
+3. Each module must have 6 content cards. Each card is ONE teaching block of 80–140 words of continuous prose. A card must contain all four of these, in this order: the professional point; the authority (name the standard, article, section, or recognised practice, and what it actually requires); a concrete workplace example with roles and a decision; and what the learner does differently on the job. Do not write a card of one or two sentences. Do not use slogans, filler, or a heading-only card.
+4. Across the six cards, cover six different jobs of work, in this order: why it matters in the learner's role; the governing rule and who it binds; how the control works; a worked example; a common failure and its consequence; the decision standard the learner will be held to. Do not repeat the same point in a new sentence.
+5. Each module must have ONE branching scenario with exactly 2 options (one correct, one incorrect). The prompt is a full case of 70–120 words: the role, the facts, the pressure, and the decision. Each option is a professional action. Each feedback note is 40–70 words and explains the standard and the consequence. Do not write a one-line riddle.
+6. Each module must have 2-3 quiz questions with 4 options each. Every question is a short case, not a definition. Include a rationale of 30–50 words that explains why the correct option is the professional answer.
+7. Use the authoritative frameworks that match the subject. Cite them by name. Do not invent article numbers, statute citations, fines, or statistics that are not in the source or in the selected domain guidance. If you need an illustration and the source has no figure, label it as an illustration. Do not add ECOFEL or Egmont Group citations unless that organisation is the client or the source material requires it.
+8. Use the terminology of the subject matter correctly. Do not import another organisation's programme name or AML/FIU terms unless the source or the selected domain calls for them.
+9. Language must be precise enough for a compliance, audit, or management review.
+10. Stay with the frameworks named in the source material and the selected domain.
+11. Always respond with valid JSON only — no markdown, no explanations, no code fences.
 
 CRITICAL SELF-CHECK before responding:
 - Does EACH module have the EXACT required number of content cards? (Count them. Do not under-deliver.)
@@ -79,7 +85,7 @@ If ANY of these are wrong, fix them BEFORE responding.
 OUTPUT SCHEMA (must match exactly):
 {
   "title": "string (concise, professional)",
-  "description": "string (1-2 sentences)",
+      "description": "string (3-4 sentences: who it is for, what they will be able to do, and the standards it teaches)",
   "targetAudience": "string (e.g., 'FIU analysts, compliance officers, and AML/CFT practitioners')",
   "estimatedDuration": "string (e.g., '45 minutes')",
   "modules": [
@@ -92,14 +98,14 @@ OUTPUT SCHEMA (must match exactly):
       ],
       "content": ["card 1 text", "card 2 text", "card 3 text"],
       "scenario": {
-        "prompt": "string (the scenario setup — must be an FIU operational context)",
+        "prompt": "string (the scenario setup — realistic for this client's learners)",
         "options": [
           { "id": "a", "text": "string", "isCorrect": false, "feedback": "string" },
           { "id": "b", "text": "string", "isCorrect": true, "feedback": "string" }
         ]
       },
       "quiz": [
-        { "question": "string", "options": ["a", "b", "c", "d"], "correctIndex": 0 }
+        { "question": "string (a short case)", "options": ["a", "b", "c", "d"], "correctIndex": 0, "rationale": "string (why the correct option is the professional answer)" }
       ]
     }
   ]
@@ -109,10 +115,13 @@ OUTPUT SCHEMA (must match exactly):
 // ============================================================
 // DYNAMIC SYSTEM PROMPT — respects user-selected size/quiz depth
 // ============================================================
-function buildSystemPrompt(settings: CourseSettings): string {
+function buildSystemPrompt(
+  settings: CourseSettings,
+  templateId?: string
+): string {
   const targetModules = resolveModuleCount(settings);
   const targetQuiz = resolveQuizPerModule(settings);
-  const targetCards = 4; // per module
+  const targetCards = CARDS_PER_MODULE;
 
   // Prepend a loud, unmissable mandate with exact counts
   const mandate = `\n=== MANDATORY COUNTS FOR THIS GENERATION ===\n` +
@@ -122,22 +131,46 @@ function buildSystemPrompt(settings: CourseSettings): string {
     `- Learning objectives per module: EXACTLY 3\n` +
     `- Branching scenarios: EXACTLY 1 per module (2 options each)\n` +
     `Do NOT produce fewer than these counts. Do NOT merge modules. Do NOT create filler conclusion modules.\n` +
-    `=============================================\n\n` +
-    `Return SYSTEM_PROMPT with those numbers enforced.`;
+    `=============================================\n\n`;
 
-  return mandate + SYSTEM_PROMPT
+  let prompt = mandate + SYSTEM_PROMPT
     .replace(
       /1\. Create 3 to 5 modules[^\n]*/,
-      `1. Create EXACTLY ${targetModules} modules. Each module should take 8-12 minutes to complete.`
+      `1. Create EXACTLY ${targetModules} modules. Each module is a complete lesson of about 15–20 minutes, not an overview.`
     )
     .replace(
-      /3\. Each module must have 3-5 content cards[^\n]*/,
-      `3. Each module MUST have EXACTLY ${targetCards} content cards. Not 2, not 3 — exactly ${targetCards}. Each card = 1 focused idea, 2-4 sentences. Each card must add NEW information (no repetition between cards).`
+      /3\. Each module must have 6 content cards[^\n]*/,
+      `3. Each module MUST have EXACTLY ${targetCards} content cards. Each card is 80–140 words and teaches a different part of the lesson: the point, the named authority, a workplace example, and the action on the job. Do not write a thin card.`
     )
     .replace(
-      /5\. Each module must have 2-3 quiz questions[^\n]*/,
-      `5. Each module MUST have EXACTLY ${targetQuiz} quiz question(s) with 4 options each. Not 1 — exactly ${targetQuiz}. Every quiz must test understanding, not recall.`
+      /6\. Each module must have 2-3 quiz questions[^\n]*/,
+      `6. Each module MUST have EXACTLY ${targetQuiz} quiz question(s) with 4 options each. Every question is a short case, not a definition. Include a rationale of 30–50 words.`
     );
+
+  // Append template-specific guidance if a template is selected
+  if (templateId && templateId !== "custom") {
+    const template = getTemplate(templateId);
+    if (template.systemPromptSuffix) {
+      prompt += "\n" + template.systemPromptSuffix;
+    }
+  }
+
+  const client = settings.branding ?? DEFAULT_BRANDING;
+  prompt += `\n\nCLIENT BRANDING FOR THIS COURSE:\n` +
+    `- Client name: ${client.clientName}\n` +
+    `- Official website: ${client.websiteUrl || "not provided"}\n` +
+    `- Write the course as material produced for ${client.clientName}.\n` +
+    `- Use that name wherever the programme owner is mentioned.\n` +
+    `- Do not name ECOFEL, the Egmont Group, or any other organisation as the owner unless it is the client above or the source material requires the citation.\n`;
+
+  return prompt;
+}
+
+function courseRequest(sourceText: string, settings: CourseSettings): string {
+  if (sourceText.startsWith("Your previous output FAILED")) return sourceText;
+  const client = settings.branding ?? DEFAULT_BRANDING;
+  const site = client.websiteUrl ? ` Official website: ${client.websiteUrl}.` : "";
+  return `Write a full professional course for ${client.clientName}, not a summary of the notes.${site} Research the standards that govern this subject and teach them with worked examples. Attribute the programme only to ${client.clientName}.\n\n${sourceText}`;
 }
 
 // ============================================================
@@ -145,7 +178,8 @@ function buildSystemPrompt(settings: CourseSettings): string {
 // ============================================================
 async function generateWithOllama(
   sourceText: string,
-  settings: CourseSettings = DEFAULT_SETTINGS
+  settings: CourseSettings = DEFAULT_SETTINGS,
+  templateId?: string
 ): Promise<GeneratedCourse> {
   const response = await fetch(`${OLLAMA_URL}/api/chat`, {
     method: "POST",
@@ -155,10 +189,10 @@ async function generateWithOllama(
       stream: false,
       format: "json",
       messages: [
-        { role: "system", content: buildSystemPrompt(settings) },
+        { role: "system", content: buildSystemPrompt(settings, templateId) },
         {
           role: "user",
-          content: `Transform this source material into an eLearning course aligned with ECOFEL/ECP standards:\n\n${sourceText}`,
+          content: courseRequest(sourceText, settings),
         },
       ],
     }),
@@ -183,7 +217,8 @@ async function generateWithOllama(
 // ============================================================
 async function generateWithOpenAI(
   sourceText: string,
-  settings: CourseSettings = DEFAULT_SETTINGS
+  settings: CourseSettings = DEFAULT_SETTINGS,
+  templateId?: string
 ): Promise<GeneratedCourse> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey || !apiKey.startsWith("sk-")) {
@@ -195,12 +230,13 @@ async function generateWithOpenAI(
   const response = await openai.chat.completions.create({
     model: OPENAI_MODEL,
     response_format: { type: "json_object" },
-    temperature: 0.7,
+    temperature: 0.4,
+    max_tokens: 12000,
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: buildSystemPrompt(settings, templateId) },
       {
         role: "user",
-        content: `Transform this source material into an eLearning course aligned with ECOFEL/ECP standards:\n\n${sourceText}`,
+        content: courseRequest(sourceText, settings),
       },
     ],
   });
@@ -215,9 +251,11 @@ async function generateWithOpenAI(
 // HYBRID RETRY — always uses OpenAI for quality-critical retries
 // ============================================================
 async function retryWithCloud(
-  retryPrompt: string
+  retryPrompt: string,
+  settings: CourseSettings,
+  templateId?: string
 ): Promise<GeneratedCourse> {
-  return generateWithOpenAI(retryPrompt);
+  return generateWithOpenAI(retryPrompt, settings, templateId);
 }
 
 
@@ -226,10 +264,11 @@ async function retryWithCloud(
 // ============================================================
 export async function generateCourse(
   sourceText: string,
-  options?: { maxRetries?: number; settings?: CourseSettings }
+  options?: { maxRetries?: number; settings?: CourseSettings; templateId?: string }
 ): Promise<GeneratedCourse & { _quality?: { score: number; attempts: number; failures: string[] } }> {
   const maxRetries = options?.maxRetries ?? 2;
   const settings = options?.settings ?? DEFAULT_SETTINGS;
+  const templateId = options?.templateId;
 
   // Hybrid: local Llama first, cloud retry. Local: always local. Else: always cloud.
   const provider = (AI_MODE === "local" || AI_MODE === "hybrid")
@@ -237,7 +276,7 @@ export async function generateCourse(
     : generateWithOpenAI;
 
   // --- Attempt 1 ---
-  let course = await provider(sourceText, settings);
+  let course = await provider(sourceText, settings, templateId);
   let validation = validateCourse(course, settings);
   let attempts = 1;
 
@@ -260,8 +299,8 @@ export async function generateCourse(
     try {
       const retryPrompt = buildRetryPrompt(sourceText, validation, settings);
       const retryCourse = useCloud
-        ? await retryWithCloud(retryPrompt)
-        : await provider(retryPrompt, settings);
+        ? await retryWithCloud(retryPrompt, settings, templateId)
+        : await provider(retryPrompt, settings, templateId);
       const retryValidation = validateCourse(retryCourse, settings);
 
       console.log(

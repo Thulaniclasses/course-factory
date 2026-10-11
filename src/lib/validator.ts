@@ -1,6 +1,7 @@
 import type { GeneratedCourse } from "./ai";
 import {
   type CourseSettings,
+  CARDS_PER_MODULE,
   DEFAULT_SETTINGS,
   resolveModuleCount,
   resolveQuizPerModule,
@@ -31,7 +32,9 @@ function getRequirements(settings: CourseSettings = DEFAULT_SETTINGS) {
   return {
     minModules: targetModules, // must hit the target exactly
     idealModules: targetModules,
-    minCardsPerModule: 3,
+    minCardsPerModule: CARDS_PER_MODULE,
+    minWordsPerCard: 45,
+    minScenarioWords: 40,
     minQuizPerModule: targetQuiz, // must hit the target exactly
     idealQuizPerModule: targetQuiz,
     minObjectivesPerModule: 2,
@@ -101,8 +104,28 @@ export function validateCourse(
     if (!m.content || m.content.length < REQUIREMENTS.minCardsPerModule) {
       failures.push({
         code: "TOO_FEW_CARDS",
-        message: `${label} has ${m.content?.length || 0} content card(s). Requires ${REQUIREMENTS.minCardsPerModule}+.`,
-        severity: "warning",
+        message: `${label} has ${m.content?.length || 0} content card(s). Requires ${REQUIREMENTS.minCardsPerModule}.`,
+        severity: "error",
+      });
+    }
+
+    (m.content || []).forEach((card, cardIndex) => {
+      const words = card.trim().split(/\s+/).filter(Boolean).length;
+      if (words < REQUIREMENTS.minWordsPerCard) {
+        failures.push({
+          code: "THIN_CARD",
+          message: `${label} card ${cardIndex + 1} is only ${words} words. Each card must be a full teaching block of at least ${REQUIREMENTS.minWordsPerCard} words, with the rule, a named source, an example, and the action on the job.`,
+          severity: "error",
+        });
+      }
+    });
+
+    const scenarioWords = (m.scenario?.prompt || "").trim().split(/\s+/).filter(Boolean).length;
+    if (m.scenario?.prompt && scenarioWords < REQUIREMENTS.minScenarioWords) {
+      failures.push({
+        code: "THIN_SCENARIO",
+        message: `${label} scenario is only ${scenarioWords} words. Write a full workplace case of at least ${REQUIREMENTS.minScenarioWords} words.`,
+        severity: "error",
       });
     }
 
@@ -154,9 +177,9 @@ CORRECTIONS REQUIRED — you must fix ALL of the following:
 
 1. Produce EXACTLY ${REQUIREMENTS.idealModules} modules (not fewer, not more).
 2. Each module MUST have at least ${REQUIREMENTS.minObjectivesPerModule} learning objectives starting with "By the end of this module, learners will be able to..."
-3. Each module MUST have at least ${REQUIREMENTS.minCardsPerModule} content cards. Each card must be substantive (2-4 sentences, one focused idea).
-4. Each module MUST have at least ${REQUIREMENTS.minQuizPerModule} quiz questions with 4 options each.
-5. Each module MUST have exactly ONE branching scenario with EXACTLY 2 options (one correct, one incorrect), each with detailed feedback.
+3. Each module MUST have at least ${REQUIREMENTS.minCardsPerModule} content cards. Each card is 80–140 words: the point, the named authority, a workplace example, and what the learner does on the job. Rewrite any card under ${REQUIREMENTS.minWordsPerCard} words.
+4. Each module MUST have at least ${REQUIREMENTS.minQuizPerModule} quiz questions with 4 options each, and a rationale that explains the professional answer.
+5. Each module MUST have exactly ONE branching scenario with EXACTLY 2 options. The prompt is a full case of at least ${REQUIREMENTS.minScenarioWords} words. Each feedback note explains the standard and the consequence.
 
 Do NOT summarize. Do NOT cut content. Do NOT repeat modules. Produce the full ${REQUIREMENTS.idealModules}-module structure now.
 

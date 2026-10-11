@@ -1,3 +1,5 @@
+import { type Branding, DEFAULT_BRANDING } from "./branding";
+
 // Course generation settings shared between UI and AI
 
 export type CourseSize = "small" | "medium" | "large" | "custom";
@@ -7,12 +9,14 @@ export interface CourseSettings {
   size: CourseSize;
   customModules: number; // used only when size === "custom"
   quizDepth: QuizDepth;
+  branding: Branding;
 }
 
 export const DEFAULT_SETTINGS: CourseSettings = {
   size: "medium",
   customModules: 4,
   quizDepth: "standard",
+  branding: DEFAULT_BRANDING,
 };
 
 export const SIZE_PRESETS: Record<Exclude<CourseSize, "custom">, { modules: number; label: string; description: string }> = {
@@ -32,6 +36,9 @@ export const SIZE_PRESETS: Record<Exclude<CourseSize, "custom">, { modules: numb
     description: "6 modules · comprehensive",
   },
 };
+
+/** Teaching blocks per module. Each block is a full professional explanation, not a caption. */
+export const CARDS_PER_MODULE = 6;
 
 export const QUIZ_DEPTH_PRESETS: Record<QuizDepth, { perModule: number; label: string; description: string }> = {
   light: { perModule: 1, label: "Light", description: "1 quiz per module" },
@@ -68,12 +75,12 @@ export function estimateDuration(settings: CourseSettings): {
 } {
   const modules = resolveModuleCount(settings);
   const quizPerModule = resolveQuizPerModule(settings);
-  const cardsPerModule = 4; // target from prompt
+  const cardsPerModule = CARDS_PER_MODULE;
   const quizzes = modules * quizPerModule;
   const cards = modules * cardsPerModule;
 
-  // Rough timing: 3 min reading per module + 2 min per quiz + 1 min scenario
-  const minutes = modules * 4 + quizzes * 1 + modules * 1;
+  // A full card is a few minutes of reading, plus the scenario and the checks.
+  const minutes = modules * 12 + quizzes * 2 + modules * 3;
 
   return { modules, cards, quizzes, minutes };
 }
@@ -84,4 +91,13 @@ export function estimateDuration(settings: CourseSettings): {
 export function describeSettings(settings: CourseSettings): string {
   const est = estimateDuration(settings);
   return `${est.modules} modules · ${est.cards} cards · ${est.quizzes} quizzes · ~${est.minutes} min`;
+}
+
+
+/**
+ * Human-readable branding summary.
+ */
+export function describeBranding(settings: CourseSettings): string {
+  const b = settings.branding;
+  return b.clientName || "Custom branding";
 }

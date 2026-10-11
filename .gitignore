@@ -45,3 +45,5 @@ backend/.env
 *.pyc
 *.bak
 *.bak[0-9]
+*.pre-templates
+*.agent-backup

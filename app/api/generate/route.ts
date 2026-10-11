@@ -9,6 +9,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     const sourceText = body?.sourceText;
     const settings: CourseSettings = body?.settings ?? DEFAULT_SETTINGS;
+    const templateId: string | undefined = body?.templateId;
 
     if (!sourceText || typeof sourceText !== "string" || sourceText.trim().length < 50) {
       return NextResponse.json(
@@ -17,7 +18,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const course = await generateCourse(sourceText, { settings });
+    const course = await generateCourse(sourceText, { settings, templateId });
     return NextResponse.json({ course });
   } catch (error) {
     console.error("Generate error:", error);

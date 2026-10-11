@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Sparkles, Upload, FileText, X, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { GeneratedCourse } from "@/lib/ai";
@@ -13,7 +13,10 @@ import {
   QUIZ_DEPTH_PRESETS,
   describeSettings,
 } from "@/lib/courseSettings";
+import { TEMPLATES, getTemplate } from "@/lib/templates";
 import { ProviderBadge } from "./ProviderBadge";
+import { BrandingPanel } from "./BrandingPanel";
+import { loadSavedBranding, saveBranding } from "@/lib/brandStore";
 
 const LOADING_STAGES = [
   "Analyzing source material...",
@@ -25,18 +28,38 @@ const LOADING_STAGES = [
 ];
 
 interface WorkspaceProps {
-  onCourseGenerated: (course: GeneratedCourse) => void;
+  onCourseGenerated: (course: GeneratedCourse, settings?: CourseSettings) => void;
+  onSettingsChange?: (settings: CourseSettings) => void;
   saveError: string | null;
   setSaveError: (err: string | null) => void;
 }
 
-export function Workspace({ onCourseGenerated, saveError, setSaveError }: WorkspaceProps) {
+export function Workspace({ onCourseGenerated, onSettingsChange, saveError, setSaveError }: WorkspaceProps) {
   const [content, setContent] = useState("");
   const [fileName, setFileName] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [loadingStage, setLoadingStage] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState<CourseSettings>(DEFAULT_SETTINGS);
+  const [templateId, setTemplateId] = useState<string>("custom");
+  const skipBrandSave = useRef(true);
+
+  useEffect(() => {
+    const saved = loadSavedBranding();
+    if (saved) setSettings((current) => ({ ...current, branding: saved }));
+  }, []);
+
+  useEffect(() => {
+    onSettingsChange?.(settings);
+  }, [settings, onSettingsChange]);
+
+  useEffect(() => {
+    if (skipBrandSave.current) {
+      skipBrandSave.current = false;
+      return;
+    }
+    saveBranding(settings.branding);
+  }, [settings.branding]);
 
   const handleGenerate = async () => {
     if (content.trim().length < 50) return;
@@ -54,7 +77,7 @@ export function Workspace({ onCourseGenerated, saveError, setSaveError }: Worksp
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sourceText: content, settings }),
+        body: JSON.stringify({ sourceText: content, settings, templateId }),
       });
 
       const data = await res.json();
@@ -63,7 +86,7 @@ export function Workspace({ onCourseGenerated, saveError, setSaveError }: Worksp
         throw new Error(data.error || "Failed to generate course");
       }
 
-      onCourseGenerated(data.course);
+      onCourseGenerated(data.course, settings);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Unknown error generating course"
@@ -225,6 +248,93 @@ export function Workspace({ onCourseGenerated, saveError, setSaveError }: Worksp
             </div>
           </div>
 
+          {/* Template selector */}
+          <div
+            style={{
+              background: "var(--card, #171717)",
+              border: "1px solid var(--border, #262626)",
+              borderRadius: 12,
+              padding: 12,
+              display: "flex",
+              flexDirection: "column",
+              gap: 10,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <label className="cf-label" style={{ margin: 0, fontSize: "0.8rem" }}>
+                Course Template
+              </label>
+              {templateId !== "custom" && (
+                <button
+                  onClick={() => setTemplateId("custom")}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--muted)",
+                    cursor: "pointer",
+                    fontSize: "0.7rem",
+                    padding: 0,
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "36px 1fr", gap: 10, alignItems: "center" }}>
+              <div style={{ fontSize: 20, textAlign: "center" }}>
+                {getTemplate(templateId).icon}
+              </div>
+              <select
+                value={templateId}
+                onChange={(e) => {
+                  const newId = e.target.value;
+                  setTemplateId(newId);
+                  const tpl = getTemplate(newId);
+                  if (tpl.sampleSourceText && content.trim().length < 50) {
+                    setContent(tpl.sampleSourceText);
+                  }
+                }}
+                disabled={isGenerating}
+                className="cf-input"
+                style={{ fontSize: "0.8rem", padding: "6px 8px" }}
+              >
+                {TEMPLATES.map((tpl) => (
+                  <option key={tpl.id} value={tpl.id}>
+                    {tpl.icon} {tpl.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <p style={{ fontSize: "0.7rem", color: "var(--muted)", margin: 0 }}>
+              {getTemplate(templateId).description}
+            </p>
+
+            {templateId !== "custom" && (
+              <button
+                onClick={() => {
+                  const tpl = getTemplate(templateId);
+                  if (tpl.sampleSourceText) {
+                    setContent(tpl.sampleSourceText);
+                  }
+                }}
+                style={{
+                  background: "transparent",
+                  border: "1px solid var(--border, #262626)",
+                  color: "var(--muted)",
+                  cursor: "pointer",
+                  fontSize: "0.7rem",
+                  padding: "5px 10px",
+                  borderRadius: 6,
+                  alignSelf: "flex-start",
+                }}
+              >
+                Load sample source text
+              </button>
+            )}
+          </div>
+
           {/* Course settings */}
           <div
             style={{
@@ -304,6 +414,15 @@ export function Workspace({ onCourseGenerated, saveError, setSaveError }: Worksp
               </select>
             </div>
           </div>
+
+          {/* Client branding */}
+          <BrandingPanel
+            branding={settings.branding}
+            onChange={(branding) =>
+              setSettings((current) => ({ ...current, branding }))
+            }
+            disabled={isGenerating}
+          />
 
           {/* Generate button */}
           <button
