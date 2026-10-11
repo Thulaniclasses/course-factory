@@ -2,8 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Course Factory",
-  description: "AI-powered eLearning generation engine",
+  title: "Course Factory — AI eLearning Engine",
+  description:
+    "Generate modern, interactive eLearning courses from any source material using AI. Produces JSON and SCORM packages.",
 };
 
 export default function RootLayout({
@@ -13,9 +14,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="bg-slate-950 text-slate-100 antialiased">
-        {children}
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

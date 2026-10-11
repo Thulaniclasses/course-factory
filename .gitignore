@@ -40,3 +40,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .env*.local
+backend/__pycache__/
+backend/.env
+*.pyc
+*.bak
+*.bak[0-9]
